@@ -18,6 +18,9 @@ class Bot {
 
     this.selectedGroupIds = [];
     this.clients = []; // [{name, emoji, _norm, _rx}]
+    this.rawClients = [];
+    this.nameLists = []; // [{id,label,emoji,targetGroupId,forward,items:[{name,_norm,_rx}]}]
+    this.rawNameLists = [];
     this.settings = {
       emoji: '✅',
       replyText: 'تم ✅',
@@ -26,6 +29,7 @@ class Bot {
       cooldownSec: 3,                // مهلة لكل جروب (ثواني)
       normalizeArabic: true
     };
+    this.lastActivityTs = 0;
 
     // تخزين دائم
     this.state = new Store.default({ name: 'wbot-state' });
@@ -42,24 +46,36 @@ class Bot {
   log(line) { try { this.emitter.emit('log', line); } catch {} }
   wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-  normalizeArabic(s = '') {
-    if (!s) return '';
-    let t = s;
-    t = t.replace(/[\u200c\u200d\u200e\u200f\u202a-\u202e]/g, ''); // محارف خفية/اتجاه
-    t = t.replace(/[\u064B-\u0652\u0670]/g, '').replace(/\u0640/g, ''); // تشكيل+ألف خنجرية+تطويل
-    t = t.replace(/[أإآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').replace(/ؤ/g, 'و').replace(/ئ/g, 'ي');
-    const ar = '٠١٢٣٤٥٦٧٨٩', en = '0123456789';
-    t = t.replace(/[٠-٩]/g, d => en[ar.indexOf(d)]);
-    t = t.replace(/[^\p{L}\p{N}\s]/gu, ' ');
-    t = t.replace(/\s+/g, ' ').trim().toLowerCase();
-    return t;
+  normalizeArabic(text = '') {
+    if (!text) return '';
+    let out = String(text);
+    out = out.replace(/[\u200c\u200d\u200e\u200f\u202a-\u202e]/g, '');
+    out = out.replace(/[\u064B-\u0652\u0670]/g, '').replace(/\u0640/g, '');
+    out = out
+      .replace(/[أإآٱ]/g, 'ا')
+      .replace(/ى/g, 'ي')
+      .replace(/ة/g, 'ه')
+      .replace(/ؤ/g, 'و')
+      .replace(/ئ/g, 'ي');
+    const arDigits = '٠١٢٣٤٥٦٧٨٩';
+    const enDigits = '0123456789';
+    out = out.replace(/[٠-٩]/g, (d) => enDigits[arDigits.indexOf(d)]);
+    out = out.replace(/[^\p{L}\p{N}\s]/gu, ' ');
+    out = out.replace(/\s+/g, ' ').trim().toLowerCase();
+    return out;
   }
   escapeRegex(s=''){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
   buildNameRegex(normName) {
-    const tokens = (normName || '').split(' ').filter(w => w.length >= 2);
+    const tokens = (normName || '').split(' ').filter(Boolean);
     if (!tokens.length) return null;
     const pattern = tokens.map(tok => this.escapeRegex(tok)).join('[\\s\\p{P}]*');
-    try { return new RegExp(`(?:^|\\s)${pattern}(?:\\s|$)`, 'u'); } catch { return null; }
+    try { return new RegExp(pattern, 'iu'); } catch { return null; }
+  }
+
+  _normalizeMaybe(text = '') {
+    if (!text) return '';
+    if (this.settings.normalizeArabic) return this.normalizeArabic(text);
+    return String(text).toLowerCase().replace(/\s+/g, ' ').trim();
   }
 
   _msgId(m){
@@ -68,23 +84,114 @@ class Bot {
   _isDone(msgId){ return !!(msgId && this.state.get(`done.${msgId}`)); }
   _markDone(msgId){ if (msgId) this.state.set(`done.${msgId}`, Date.now()); }
 
+  async _respectCooldown(chatId) {
+    const cd = Math.max(0, Number(this.settings.cooldownSec || 0));
+    if (!cd) return;
+    const last = this.state.get(`cool.${chatId}`, 0);
+    const diff = Date.now() - last;
+    if (diff < cd * 1000) {
+      await this.wait(cd * 1000 - diff);
+    }
+  }
+
+  async _respectRateLimit() {
+    const rpm = Math.max(1, Number(this.settings.ratePerMinute || 1));
+    while (this.minuteCount >= rpm) {
+      this.log('⏳ امتلأ حد الرد بالدقيقة — انتظار قصير…');
+      await this.wait(1500);
+    }
+  }
+
+  _findMatch(normBody) {
+    if (!normBody) return null;
+    for (const list of this.nameLists) {
+      for (const item of list.items) {
+        if (item._rx?.test(normBody)) {
+          return { type: 'nameList', list, item };
+        }
+      }
+    }
+    for (const client of this.clients) {
+      if (client._rx?.test(normBody)) {
+        return { type: 'client', client };
+      }
+    }
+    return null;
+  }
+
+  _pickEmoji(match) {
+    if (!match) return this.settings.emoji || '✅';
+    if (match.type === 'nameList') {
+      return match.list.emoji || this.settings.emoji || '✅';
+    }
+    if (match.type === 'client') {
+      return match.client.emoji || this.settings.emoji || '✅';
+    }
+    return this.settings.emoji || '✅';
+  }
+
+  _recordNameListHit(list, item, chatId) {
+    if (!list?.id || !item?._norm) return;
+    const stats = this.state.get('nameListStats') || {};
+    if (!stats[list.id]) stats[list.id] = {};
+    const prev = stats[list.id][item._norm] || {};
+    stats[list.id][item._norm] = {
+      name: item.name || prev.name || '',
+      count: (prev.count || 0) + 1,
+      lastAt: Date.now(),
+      lastChatId: chatId
+    };
+    this.state.set('nameListStats', stats);
+  }
+
   setClients(arr = []) {
-    const list = Array.isArray(arr) ? arr : [];
-    this.clients = list.map(c => {
+    this.rawClients = Array.isArray(arr) ? arr : [];
+    this._rebuildClients();
+  }
+
+  _rebuildClients() {
+    const list = Array.isArray(this.rawClients) ? this.rawClients : [];
+    this.clients = list.map((c) => {
       const name = typeof c === 'string' ? c : (c.name || '');
       const emoji = typeof c === 'string' ? '✅' : (c.emoji || '✅');
-      const norm = this.settings.normalizeArabic ? this.normalizeArabic(name) : (name || '').toLowerCase();
+      const norm = this._normalizeMaybe(name);
       const rx = this.buildNameRegex(norm);
       return { name, emoji, _norm: norm, _rx: rx };
-    }).filter(x => x.name && x._rx);
+    }).filter((x) => x.name && x._rx);
     this.log(`clients loaded: ${this.clients.length}`);
+  }
+
+  setNameLists(arr = []) {
+    this.rawNameLists = Array.isArray(arr) ? arr : [];
+    this._rebuildNameLists();
+  }
+
+  _rebuildNameLists() {
+    const lists = Array.isArray(this.rawNameLists) ? this.rawNameLists : [];
+    let idx = 0;
+    this.nameLists = lists.map((l) => {
+      const id = String(l.id || `list-${idx++}`);
+      const label = l.label || id;
+      const emoji = l.emoji || '';
+      const targetGroupId = l.targetGroupId || null;
+      const forward = !!l.forward;
+      const namesArr = Array.isArray(l.names) ? l.names : [];
+      const items = namesArr.map((name) => {
+        const value = typeof name === 'string' ? name : (name?.name || '');
+        const norm = this._normalizeMaybe(value);
+        const rx = this.buildNameRegex(norm);
+        return rx ? { name: value, _norm: norm, _rx: rx } : null;
+      }).filter(Boolean);
+      return { id, label, emoji, targetGroupId, forward, items };
+    }).filter((l) => l.items.length > 0);
+    this.log(`name lists loaded: ${this.nameLists.length}`);
   }
 
   setSettings(s = {}) {
     this.settings = Object.assign({}, this.settings, s);
     this.log(`[settings] mode=${this.settings.mode} rpm=${this.settings.ratePerMinute} cooldown=${this.settings.cooldownSec}s normalize=${!!this.settings.normalizeArabic}`);
-    const raw = this.clients.map(({name, emoji}) => ({name, emoji}));
-    this.setClients(raw); // إعادة بناء Regex لو تغيّر normalize
+    this._rebuildClients();
+    this._rebuildNameLists();
   }
 
   setSelectedGroups(ids = []) { this.selectedGroupIds = Array.isArray(ids) ? ids : []; }
@@ -107,7 +214,7 @@ class Bot {
     if (!fs.existsSync(this.sessionsDir)) fs.mkdirSync(this.sessionsDir, { recursive: true });
 
     this.client = new Client({
-      authStrategy: new LocalAuth({ dataPath: this.sessionsDir }),
+      authStrategy: new LocalAuth({ clientId: 'main-session', dataPath: this.sessionsDir }),
       puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] }
     });
 
@@ -188,43 +295,56 @@ class Bot {
   }
 
   async _processOneMessage({ msgObj, chatId, chatName, tsMs, text, mid }) {
-    // كوول داون لكل جروب
-    const cd = Math.max(0, Number(this.settings.cooldownSec || 0));
-    const lastCool = this.state.get(`cool.${chatId}`, 0);
-    const since = Date.now() - lastCool;
-    if (cd > 0 && since < cd * 1000) {
-      await this.wait(cd * 1000 - since);
+    const cleanText = (text || '').trim();
+    if (!cleanText) {
+      this.setLastChecked(chatId, tsMs);
+      return;
     }
 
-    // حد/دقيقة عام
-    const rpm = Math.max(1, Number(this.settings.ratePerMinute || 1));
-    if (this.minuteCount >= rpm) {
-      this.log('⏳ امتلأ حد الرد بالدقيقة — انتظار قصير…');
-      await this.wait(4000);
+    const normBody = this._normalizeMaybe(cleanText);
+    const match = this._findMatch(normBody);
+    if (!match) {
+      this.setLastChecked(chatId, tsMs);
+      return;
     }
 
-    // مطابقة اسم عميل
-    const normBody = this.settings.normalizeArabic ? this.normalizeArabic(text) : (text || '').toLowerCase();
-    let matched = null;
-    for (const c of this.clients) { if (c._rx && c._rx.test(normBody)) { matched = c; break; } }
+    await this._respectCooldown(chatId);
+    await this._respectRateLimit();
 
-    if (matched) {
-      try {
-        if (this.settings.mode === 'text' && this.settings.replyText) {
-          await msgObj.reply(this.settings.replyText);
-        } else {
-          await msgObj.react(matched.emoji || this.settings.emoji || '✅');
+    const emoji = this._pickEmoji(match);
+    const replyText = this.settings.replyText || 'تم ✅';
+
+    try {
+      if (this.settings.mode === 'text') {
+        await msgObj.reply(replyText);
+      } else {
+        await msgObj.react(emoji);
+      }
+    } catch (e) {
+      this.log('⚠️ react/reply error: ' + (e.message || e));
+    }
+
+    if (match.type === 'nameList') {
+      this._recordNameListHit(match.list, match.item, chatId);
+      if (match.list.forward && match.list.targetGroupId) {
+        try {
+          await msgObj.forward(match.list.targetGroupId);
+        } catch (e) {
+          this.log(`⚠️ forward error (${match.list.id}): ${e.message || e}`);
         }
-        this.minuteCount += 1;
-        this.state.set(`cool.${chatId}`, Date.now());
-        this._markDone(mid);
-        this.log(`↩️ ${chatName} → ${matched.name}`);
-      } catch (e) {
-        this.log('⚠️ react/reply error: ' + (e.message || e));
       }
     }
 
-    // ✅ دوّن آخر نقطة دائماً
+    this.minuteCount += 1;
+    this.state.set(`cool.${chatId}`, Date.now());
+    this._markDone(mid);
+    this.lastActivityTs = Date.now();
+
+    const label = match.type === 'nameList'
+      ? `${match.list.label || match.list.id} → ${match.item.name}`
+      : (match.client.name || 'client');
+    this.log(`↩️ ${chatName} → ${label}`);
+
     this.setLastChecked(chatId, tsMs);
   }
 
@@ -247,7 +367,9 @@ class Bot {
       selectedGroupIds: this.selectedGroupIds,
       clients: this.clients.map(({name, emoji}) => ({name, emoji})),
       settings: this.settings,
-      queueSize: this.queue.length
+      queueSize: this.queue.length,
+      lastActivityTs: this.lastActivityTs,
+      nameListsCount: this.nameLists.length
     };
   }
   async getQR() {
@@ -256,75 +378,38 @@ class Bot {
     return { error: 'QR not available yet' };
   }
   async fetchGroups() {
+    if (!this.client) throw new Error('WhatsApp client not initialized');
     if (!this.isReady) throw new Error('WhatsApp not ready');
-    const chats = await this.client.getChats();
-    const groups = chats.filter(c => c.isGroup).map(c => ({
-      id: c.id._serialized,
-      name: c.name,
-      count: Array.isArray(c.participants) ? c.participants.length : 0
-    }));
-    this.log(`📥 تم جلب المجموعات: ${groups.length}`);
-    return groups;
+    try {
+      const chats = await this.client.getChats();
+      const groups = chats.filter(c => c.isGroup).map(c => ({
+        id: c.id._serialized,
+        name: c.name,
+        count: Array.isArray(c.participants) ? c.participants.length : 0
+      }));
+      this.log(`📥 تم جلب المجموعات: ${groups.length}`);
+      return groups;
+    } catch (err) {
+      this.log(`⚠️ fetchGroups error: ${err.message || err}`);
+      throw err;
+    }
   }
 
-  // أرشيف: نحترم since + نتجنب الرسائل المعالجة سابقاً + FIFO
+  // فحص الأرشيف بدون إرسال ردود — يرجّع أرقام فقط
   async processBacklog({ startAtMs = null, limitPerChat = 800 } = {}) {
-    if (!this.client || !this.isReady) throw new Error('WhatsApp not ready');
+    if (!this.client) throw new Error('WhatsApp client not initialized');
+    if (!this.isReady) throw new Error('WhatsApp not ready');
 
-    const chats = await this.client.getChats();
-    const groups = chats.filter(
-      c => c.isGroup && (this.selectedGroupIds.length ? this.selectedGroupIds.includes(c.id._serialized) : true)
-    );
-
-    for (const chat of groups) {
-      const chatId = chat.id._serialized;
-      const since = startAtMs ?? this.getLastChecked(chatId) ?? 0;
-      this.log(`[backlog] ${chat.name} since ${since ? new Date(since).toLocaleString() : '—'}`);
-
-      let fetched = 0;
-      let cursor = null;
-      const batch = 200;
-
-      while (fetched < limitPerChat) {
-        const msgs = await chat.fetchMessages({ limit: Math.min(batch, limitPerChat - fetched), before: cursor || undefined });
-        if (!msgs.length) break;
-
-        const ordered = msgs.slice().reverse(); // أقدم → أحدث
-        for (const m of ordered) {
-          const tsMs = (m.timestamp || 0) * 1000;
-          if (tsMs <= since) continue;
-          if (m.fromMe) continue;
-          const mid = this._msgId(m);
-          if (this._isDone(mid)) { this.setLastChecked(chatId, tsMs); continue; }
-
-          const text = (m.body || m.caption || '').trim();
-          this.queue.push({
-            kind: 'backlog',
-            chatId,
-            chatName: chat.name,
-            tsMs,
-            exec: async () => {
-              await this._processOneMessage({ msgObj: m, chatId, chatName: chat.name, tsMs, text, mid });
-            }
-          });
-        }
-
-        fetched += msgs.length;
-        cursor = msgs[msgs.length - 1];
-        if (msgs.length < batch) break;
-      }
+    let chats;
+    try {
+      chats = await this.client.getChats();
+    } catch (err) {
+      this.log(`⚠️ processBacklog chats error: ${err.message || err}`);
+      throw err;
     }
 
-    this._runWorker();
-  }
-
-  // فحص الأرشيف: عدد الرسائل "المطابقة" فقط (إن ما في عملاء، يرجّع 0)
-  async countBacklog({ startAtMs = null, limitPerChat = 800 } = {}) {
-    if (!this.client || !this.isReady) throw new Error('WhatsApp not ready');
-
-    const chats = await this.client.getChats();
     const groups = chats.filter(
-      c => c.isGroup && (this.selectedGroupIds.length ? this.selectedGroupIds.includes(c.id._serialized) : true)
+      (c) => c.isGroup && (this.selectedGroupIds.length ? this.selectedGroupIds.includes(c.id._serialized) : true)
     );
 
     let total = 0;
@@ -343,7 +428,7 @@ class Bot {
         const msgs = await chat.fetchMessages({ limit: Math.min(batch, limitPerChat - fetched), before: cursor || undefined });
         if (!msgs.length) break;
 
-        const ordered = msgs.slice().reverse(); // أقدم → أحدث
+        const ordered = msgs.slice().reverse();
         for (const m of ordered) {
           const tsMs = (m.timestamp || 0) * 1000;
           if (tsMs <= since) continue;
@@ -355,11 +440,9 @@ class Bot {
           const text = (m.body || m.caption || '').trim();
           if (!text) continue;
 
-          if (this.clients && this.clients.length) {
-            const normBody = this.settings.normalizeArabic ? this.normalizeArabic(text) : text.toLowerCase();
-            const match = this.clients.some(c => c._rx && c._rx.test(normBody));
-            if (match) count++;
-          }
+          const normBody = this._normalizeMaybe(text);
+          const match = this._findMatch(normBody);
+          if (match) count += 1;
         }
 
         fetched += msgs.length;
@@ -372,6 +455,30 @@ class Bot {
     }
 
     return { total, byGroup };
+  }
+
+  getNameListsStats() {
+    const stats = this.state.get('nameListStats') || {};
+    return this.nameLists.map((list) => {
+      const listStats = stats[list.id] || {};
+      const items = list.items.map((item) => {
+        const entry = listStats[item._norm] || {};
+        return {
+          name: entry.name || item.name,
+          count: entry.count || 0,
+          lastAt: entry.lastAt || null,
+          lastChatId: entry.lastChatId || null
+        };
+      });
+      return {
+        id: list.id,
+        label: list.label,
+        emoji: list.emoji,
+        targetGroupId: list.targetGroupId,
+        forward: list.forward,
+        items
+      };
+    });
   }
 }
 

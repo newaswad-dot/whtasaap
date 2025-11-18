@@ -14,11 +14,14 @@ contextBridge.exposeInMainWorld('api', {
   setSettings: (s) => ipcRenderer.invoke('set-settings', s),
   getSettings: () => ipcRenderer.invoke('get-settings'),
 
+  saveNameLists: (lists) => ipcRenderer.invoke('save-name-lists', lists),
+  getNameLists: () => ipcRenderer.invoke('get-name-lists'),
+  getNameListsStats: () => ipcRenderer.invoke('get-name-lists-stats'),
+
   startBot: () => ipcRenderer.invoke('start-bot'),
   stopBot: () => ipcRenderer.invoke('stop-bot'),
 
   getLastChecked: () => ipcRenderer.invoke('get-last-checked'),
-  processBacklog: (opts) => ipcRenderer.invoke('process-backlog', opts),
   checkBacklog:   (opts) => ipcRenderer.invoke('check-backlog', opts),
 
   onLog: (cb) => ipcRenderer.on('bot-log', (_e, line) => cb(line)),
