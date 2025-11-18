@@ -214,7 +214,7 @@ class Bot {
     if (!fs.existsSync(this.sessionsDir)) fs.mkdirSync(this.sessionsDir, { recursive: true });
 
     this.client = new Client({
-      authStrategy: new LocalAuth({ dataPath: this.sessionsDir }),
+      authStrategy: new LocalAuth({ clientId: 'main-session', dataPath: this.sessionsDir }),
       puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] }
     });
 
@@ -378,22 +378,36 @@ class Bot {
     return { error: 'QR not available yet' };
   }
   async fetchGroups() {
+    if (!this.client) throw new Error('WhatsApp client not initialized');
     if (!this.isReady) throw new Error('WhatsApp not ready');
-    const chats = await this.client.getChats();
-    const groups = chats.filter(c => c.isGroup).map(c => ({
-      id: c.id._serialized,
-      name: c.name,
-      count: Array.isArray(c.participants) ? c.participants.length : 0
-    }));
-    this.log(`📥 تم جلب المجموعات: ${groups.length}`);
-    return groups;
+    try {
+      const chats = await this.client.getChats();
+      const groups = chats.filter(c => c.isGroup).map(c => ({
+        id: c.id._serialized,
+        name: c.name,
+        count: Array.isArray(c.participants) ? c.participants.length : 0
+      }));
+      this.log(`📥 تم جلب المجموعات: ${groups.length}`);
+      return groups;
+    } catch (err) {
+      this.log(`⚠️ fetchGroups error: ${err.message || err}`);
+      throw err;
+    }
   }
 
   // فحص الأرشيف بدون إرسال ردود — يرجّع أرقام فقط
   async processBacklog({ startAtMs = null, limitPerChat = 800 } = {}) {
-    if (!this.client || !this.isReady) throw new Error('WhatsApp not ready');
+    if (!this.client) throw new Error('WhatsApp client not initialized');
+    if (!this.isReady) throw new Error('WhatsApp not ready');
 
-    const chats = await this.client.getChats();
+    let chats;
+    try {
+      chats = await this.client.getChats();
+    } catch (err) {
+      this.log(`⚠️ processBacklog chats error: ${err.message || err}`);
+      throw err;
+    }
+
     const groups = chats.filter(
       (c) => c.isGroup && (this.selectedGroupIds.length ? this.selectedGroupIds.includes(c.id._serialized) : true)
     );
