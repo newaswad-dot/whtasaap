@@ -5,6 +5,7 @@ const fs = require('fs');
 const qrcode = require('qrcode');
 const Store = require('electron-store');
 const { Client, LocalAuth } = require('whatsapp-web.js');
+const puppeteer = require('puppeteer');
 
 class Bot {
   constructor({ sessionsDir }) {
@@ -215,7 +216,11 @@ class Bot {
 
     this.client = new Client({
       authStrategy: new LocalAuth({ clientId: 'main-session', dataPath: this.sessionsDir }),
-      puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] }
+      puppeteer: {
+        headless: true,
+        executablePath: puppeteer.executablePath(),
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+      }
     });
 
     this.client.on('qr', async (qr) => {
@@ -230,11 +235,18 @@ class Bot {
       this.log('✅ WhatsApp جاهز');
     });
 
+    this.client.on('auth_failure', (msg) => {
+      this.log('⚠️ auth_failure: ' + (msg || ''));
+    });
+
+    this.client.on('change_state', (state) => {
+      this.log('ℹ️ state changed: ' + (state || 'unknown'));
+    });
+
     this.client.on('disconnected', (r) => {
       this.isReady = false;
       this.running = false;
       this.log('❌ تم قطع الاتصال: ' + r);
-      try { this.client.initialize(); } catch {}
     });
 
     // رسائل حيّة → ادفع للـ FIFO queue
