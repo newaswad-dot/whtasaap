@@ -16,6 +16,10 @@ const chromePath = process.env.CHROME_PATH || path.join(
   'chrome.exe'
 );
 
+const chromePath = process.env.CHROME_PATH || path.join('C:', 'Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe');
+
+const chromePath = process.env.CHROME_PATH || path.join('C:', 'Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe');
+
 class Bot {
   constructor({ sessionsDir }) {
     this.emitter = new EventEmitter();
