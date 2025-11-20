@@ -1,15 +1,15 @@
 {
-  "name": "whatsappdesktopbot",
+  "name": "nova-whats-bot",
   "version": "1.0.1",
-  "description": "WhatsApp Desktop Bot (Electron + whatsapp-web.js)",
+  "description": "Nova experimental WhatsApp bot (Electron + whatsapp-web.js)",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --win nsis"
   },
   "build": {
-    "appId": "com.ahmad.whatsappbot",
-    "productName": "WhatsApp Desktop Bot",
+    "appId": "com.ahmad.nova-whats-bot",
+    "productName": "Nova Whats Controller",
     "directories": {
       "output": "dist"
     },
