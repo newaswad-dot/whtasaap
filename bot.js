@@ -2,10 +2,12 @@
 
 const EventEmitter = require('events');
 const fs = require('fs');
+const path = require('path');
 const qrcode = require('qrcode');
 const Store = require('electron-store');
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const puppeteer = require('puppeteer');
+
+const chromePath = process.env.CHROME_PATH || path.join('C:', 'Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe');
 
 class Bot {
   constructor({ sessionsDir }) {
@@ -217,9 +219,15 @@ class Bot {
     this.client = new Client({
       authStrategy: new LocalAuth({ clientId: 'main-session', dataPath: this.sessionsDir }),
       puppeteer: {
-        headless: true,
-        executablePath: puppeteer.executablePath(),
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        headless: false,
+        executablePath: chromePath,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--window-size=1280,720'
+        ]
       }
     });
 
