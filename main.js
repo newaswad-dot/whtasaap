@@ -9,6 +9,11 @@ const store = new Store.default();
 let win;
 let bot;
 
+// ضبط اسم التطبيق ومسارات التخزين إلى الاسم الجديد
+app.setName('NovaWhatsBot');
+app.setAppUserModelId('com.ahmad.nova-whats-bot');
+app.setPath('userData', path.join(app.getPath('appData'), 'nova-whats-bot'));
+
 /* ===== Bulk (إرسال جماعي) — ضعه قبل استخدامه ===== */
 const BulkStore = new (require('electron-store').default)({ name: 'bulk-state' });
 let bulkState = {
