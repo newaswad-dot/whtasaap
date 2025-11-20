@@ -51,8 +51,10 @@ app.whenReady().then(async () => {
     const initSettings = store.get('settings') || {};
     const initClients  = store.get('clients')  || [];
     const initGroups   = store.get('selectedGroupIds') || [];
+    const initNameLists = store.get('nameLists') || [];
     bot.setSettings(initSettings);
     bot.setClients(initClients);
+    bot.setNameLists(initNameLists);
     bot.setSelectedGroups(initGroups);
     bot.log('[init] preloaded settings/clients/groups');
   } catch (e) {
@@ -117,20 +119,34 @@ ipcMain.handle('save-clients', async (_e, rawText) => {
 ipcMain.handle('get-clients', async () => store.get('clients') || []);
 
 ipcMain.handle('set-settings', async (_e, s) => {
-  const merged = Object.assign(
-    { emoji: '✅', ratePerMinute: 20, cooldownSec: 3, normalizeArabic: true, mode: 'emoji', replyText: 'تم ✅' },
-    store.get('settings') || {},
-    s || {}
-  );
+  const defaults = { emoji: '✅', replyText: 'تم ✅', mode: 'emoji', ratePerMinute: 20, cooldownSec: 3, normalizeArabic: true };
+  const merged = Object.assign({}, defaults, store.get('settings') || {}, s || {});
   store.set('settings', merged);
   bot.setSettings(merged);
   return merged;
 });
-ipcMain.handle('get-settings', async () => store.get('settings') || { emoji: '✅', ratePerMinute: 20, cooldownSec: 3, normalizeArabic: true, mode: 'emoji', replyText: 'تم ✅' });
+ipcMain.handle('get-settings', async () => store.get('settings') || { emoji: '✅', replyText: 'تم ✅', mode: 'emoji', ratePerMinute: 20, cooldownSec: 3, normalizeArabic: true });
+
+ipcMain.handle('save-name-lists', async (_e, lists) => {
+  const arr = Array.isArray(lists) ? lists.map((l, idx) => ({
+    id: String(l.id || `list-${idx}`),
+    label: l.label || '',
+    emoji: l.emoji || '',
+    targetGroupId: l.targetGroupId || null,
+    forward: !!l.forward,
+    names: Array.isArray(l.names) ? l.names.filter((n) => typeof n === 'string' && n.trim().length).map((n) => n.trim()) : []
+  })) : [];
+  store.set('nameLists', arr);
+  bot.setNameLists(arr);
+  return { ok: true, count: arr.length };
+});
+ipcMain.handle('get-name-lists', async () => store.get('nameLists') || []);
+ipcMain.handle('get-name-lists-stats', async () => bot.getNameListsStats());
 
 ipcMain.handle('start-bot', async () => {
   bot.setSettings(store.get('settings') || {});
   bot.setClients(store.get('clients') || []);
+  bot.setNameLists(store.get('nameLists') || []);
   bot.setSelectedGroups(store.get('selectedGroupIds') || []);
   await bot.start();
   return bot.getStatus();
@@ -138,12 +154,8 @@ ipcMain.handle('start-bot', async () => {
 ipcMain.handle('stop-bot', async () => { await bot.stop(); return bot.getStatus(); });
 
 ipcMain.handle('get-last-checked', async () => bot.getLastCheckedMap());
-ipcMain.handle('process-backlog', async (_e, opts) => {
-  await bot.processBacklog(opts || {});
-  return { ok: true };
-});
 ipcMain.handle('check-backlog', async (_e, opts) => {
-  const res = await bot.countBacklog(opts || {});
+  const res = await bot.processBacklog(opts || {});
   return res;
 });
 
